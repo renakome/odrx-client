@@ -70,6 +70,7 @@ import com.rian.osu.mods.*;
 import com.rian.osu.ui.FPSCounter;
 import com.rian.osu.utils.ModHashMap;
 import com.rian.osu.utils.ModUtils;
+import com.rian.spectator.SpectatorDataManager;
 
 import org.anddev.andengine.engine.Engine;
 import org.anddev.andengine.engine.camera.Camera;
@@ -91,6 +92,7 @@ import org.anddev.andengine.entity.text.ChangeableText;
 import org.anddev.andengine.input.touch.TouchEvent;
 import org.anddev.andengine.opengl.texture.region.TextureRegion;
 import org.anddev.andengine.util.Debug;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -98,7 +100,6 @@ import java.util.*;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 
-import javax.annotation.Nullable;
 import javax.microedition.khronos.opengles.GL10;
 
 import ru.nsu.ccfit.zuev.audio.Status;
@@ -119,6 +120,7 @@ import ru.nsu.ccfit.zuev.osu.helper.StringTable;
 import ru.nsu.ccfit.zuev.osu.menu.PauseMenu;
 import ru.nsu.ccfit.zuev.osu.menu.ScoreBoardItem;
 import ru.nsu.ccfit.zuev.osu.online.OnlineFileOperator;
+import ru.nsu.ccfit.zuev.osu.online.OnlineManager;
 import ru.nsu.ccfit.zuev.osu.scoring.Replay;
 import ru.nsu.ccfit.zuev.osu.scoring.ResultType;
 import ru.nsu.ccfit.zuev.osu.scoring.ScoringScene;
@@ -194,6 +196,7 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
     private ModHashMap lastMods;
     private TimedDifficultyAttributes<DroidDifficultyAttributes>[] droidTimedDifficultyAttributes;
     private TimedDifficultyAttributes<StandardDifficultyAttributes>[] standardTimedDifficultyAttributes;
+    private SpectatorDataManager spectatorDataManager;
 
     // Game
 
@@ -753,6 +756,47 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
         lastMods = mods;
         lastBeatmapInfo = beatmapInfo;
 
+        stat = new StatisticV2();
+        stat.setMod(lastMods);
+        stat.migrateLegacyMods(parsedBeatmap.getDifficulty());
+        stat.calculateModScoreMultiplier(parsedBeatmap);
+        stat.canFail = !stat.getMod().contains(ModNoFail.class)
+                && !stat.getMod().contains(ModAutopilot.class)
+                && !stat.getMod().contains(ModAutoplay.class);
+
+        var rawDifficulty = parsedBeatmap.getDifficulty();
+        float multiplier = 1 + Math.min(rawDifficulty.od, 10) / 10f + Math.min(rawDifficulty.hp, 10) / 10f;
+
+        // The maximum CS of osu!droid mapped to osu!standard is ~17.62.
+        multiplier += (Math.min(rawDifficulty.gameplayCS, 17.62f) - 3) / 4f;
+
+        stat.setDiffModifier(multiplier);
+        stat.setBeatmapNoteCount(beatmapInfo.getTotalHitObjectCount());
+        stat.setV1MaxScore(parsedBeatmap.getMaxScore());
+
+        // if (!Multiplayer.isMultiplayer && !replaying && OnlineManager.getInstance().isStayOnline() && replay != null) {
+        //     ArrayList<String> response = null;
+
+        //     try {
+        //         response = OnlineManager.getInstance().sendPlaySettings(stat, parsedBeatmap.getMd5());
+        //     } catch (OnlineManager.OnlineManagerException e) {
+        //         e.printStackTrace();
+        //     }
+
+        //     if (response == null) {
+        //         ToastLogger.showText(
+        //                 OnlineManager.getInstance().getFailMessage(),
+        //                 true
+        //         );
+
+        //         return false;
+        //     }
+        // }
+
+        if (Multiplayer.isMultiplayer && Multiplayer.isConnected() && Multiplayer.room != null) {
+            spectatorDataManager = new SpectatorDataManager(this, replay, stat);
+        }
+
         // Resetting variables before starting the game.
         Multiplayer.finalData = null;
         hasFailed = false;
@@ -855,25 +899,6 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
 
     private void prepareScene() {
         scene.setOnSceneTouchListener(this);
-
-        stat = new StatisticV2();
-        stat.setMod(lastMods);
-        stat.migrateLegacyMods(parsedBeatmap.getDifficulty());
-        stat.calculateModScoreMultiplier(parsedBeatmap);
-        stat.canFail = !stat.getMod().contains(ModNoFail.class)
-                && !stat.getMod().contains(ModRelax.class)
-                && !stat.getMod().contains(ModAutopilot.class)
-                && !stat.getMod().contains(ModAutoplay.class);
-
-        float difficultyScoreMultiplier = 1 + Math.min(parsedBeatmap.getDifficulty().od, 10) / 10f +
-                Math.min(parsedBeatmap.getDifficulty().hp, 10) / 10f;
-
-        // The maximum CS of osu!droid mapped to osu!standard is ~17.62.
-        difficultyScoreMultiplier += (Math.min(parsedBeatmap.getDifficulty().gameplayCS, 17.62f) - 3) / 4f;
-
-        stat.setDiffModifier(difficultyScoreMultiplier);
-        stat.setBeatmapNoteCount(lastBeatmapInfo.getTotalHitObjectCount());
-        stat.setBeatmapMaxCombo(lastBeatmapInfo.getMaxCombo());
 
         GameHelper.setHardRock(lastMods.ofType(ModHardRock.class));
         GameHelper.setDoubleTime(lastMods.ofType(ModDoubleTime.class));
@@ -1569,6 +1594,10 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
             }
 
             if (scoringScene != null && !startedFromHUDEditor) {
+                if (spectatorDataManager != null) {
+                    spectatorDataManager.setGameEnded(true);
+                }
+
                 if (replaying)
                     scoringScene.load(scoringScene.getReplayStat(), null, GlobalManager.getInstance().getSongService(), replayPath, null, lastBeatmapInfo);
                 else {
@@ -1763,6 +1792,8 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
             sliderRenderPaths = null;
         });
 
+        stopSpectatorDataSubmission();
+
         // osu!stable restarts the song back to preview time when the player is in the last 10 seconds *or* 2% of the beatmap.
         float mSecPassed = elapsedTime * 1000;
         var songMenu = GlobalManager.getInstance().getSongMenu();
@@ -1849,6 +1880,10 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
             comboWasMissed = true;
             stat.registerHit(0, false, false, incrementCombo);
             if (writeReplay) replay.addObjectScore(objectId, ResultType.MISS);
+            if (spectatorDataManager != null) {
+                spectatorDataManager.addObjectData(objectId);
+                spectatorDataManager.addEvent();
+            }
             if (GameHelper.isPerfect()) {
                 gameover();
 
@@ -1906,6 +1941,11 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
                 stat.registerHit(300, false, false, incrementCombo);
                 scoreName = "hit300";
             }
+        }
+
+        if (spectatorDataManager != null) {
+            spectatorDataManager.addObjectData(objectId);
+            spectatorDataManager.addEvent();
         }
 
         if (endCombo) {
@@ -2028,6 +2068,10 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
                 break;
         }
 
+        if (spectatorDataManager != null) {
+            spectatorDataManager.addEvent();
+        }
+
         if (score > 10) {
             switch (type) {
                 case GameObjectListener.SLIDER_START:
@@ -2064,6 +2108,9 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
     public void onSpinnerHit(int id, final int score, final boolean endCombo, int totalScore) {
         if (score == 1000) {
             stat.registerHit(score, false, false);
+            if (spectatorDataManager != null) {
+                spectatorDataManager.addEvent();
+            }
             return;
         }
 
@@ -2528,6 +2575,10 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
             return;
         }
 
+        if (spectatorDataManager != null) {
+            spectatorDataManager.resumeTimer((long) (elapsedTime % 5) * 1000);
+        }
+
         if (video != null && videoStarted) {
             video.play();
         }
@@ -2978,5 +3029,14 @@ public class GameScene implements GameObjectListener, IOnSceneTouchListener {
         if (Config.isShrinkPlayfieldDownwards()) {
             camera.setCenterDirect(Config.getRES_WIDTH() / 2f, Config.getRES_HEIGHT() / 2f);
         }
+    }
+
+    public void stopSpectatorDataSubmission() {
+        if (spectatorDataManager == null) {
+            return;
+        }
+
+        spectatorDataManager.pauseTimer();
+        spectatorDataManager = null;
     }
 }

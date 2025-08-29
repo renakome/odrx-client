@@ -583,6 +583,6 @@ class SettingsFragment : SettingsFragment() {
 
 
     companion object {
-        const val REGISTER_URL: String = "https://${OnlineManager.hostname}/user/?action=register"
+        const val REGISTER_URL: String = "https://${OnlineManager.hostname}/api/register.php"
     }
 }

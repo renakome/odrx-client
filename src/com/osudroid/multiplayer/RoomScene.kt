@@ -53,6 +53,7 @@ import ru.nsu.ccfit.zuev.osu.online.OnlinePanel
 import ru.nsu.ccfit.zuev.skins.OsuSkin
 import java.text.SimpleDateFormat
 import java.util.*
+import ru.nsu.ccfit.zuev.osu.game.GameScene
 import ru.nsu.ccfit.zuev.osu.online.OnlineManager
 
 object RoomScene : Scene(), IRoomEventListener, IPlayerEventListener {
@@ -944,6 +945,22 @@ object RoomScene : Scene(), IRoomEventListener, IPlayerEventListener {
         }
 
         playerList!!.invalidate()
+    }
+
+    override fun onRoomMatchAbort() {
+        val global = GlobalManager.getInstance()
+        val scene = global.engine.scene
+        val gameScene = global.gameScene
+
+        if (scene is GameLoaderScene) {
+            show()
+        }
+
+        if (scene == gameScene.scene) {
+            gameScene.quit()
+        }
+
+        ToastLogger.showText("Match was aborted by the room host.", true)
     }
 
     override fun onRoomMatchStart() {
