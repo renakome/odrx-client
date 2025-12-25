@@ -18,6 +18,9 @@ import com.edlplan.ui.EasingHelper;
 import ru.nsu.ccfit.zuev.osu.online.OnlineManager;
 import ru.nsu.ccfit.zuev.osuplus.R;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public class WebViewFragment extends BaseFragment {
 
     public static final String PROFILE_URL = "https://" + OnlineManager.hostname + "/user/profile.php?uid=";
@@ -26,8 +29,20 @@ public class WebViewFragment extends BaseFragment {
     private String url;
     private LoadingFragment loadingFragment;
 
+    /**
+     * Modifies ngrok URLs to skip browser warning by adding query parameters
+     */
+    private static String modifyNgrokUrl(String url) {
+        if (url.contains("ngrok-free.dev")) {
+            // Add parameters that help skip ngrok warning
+            String separator = url.contains("?") ? "&" : "?";
+            return url + separator + "ngrok-skip-browser-warning=true";
+        }
+        return url;
+    }
+
     public WebViewFragment setURL(String url) {
-        this.url = url;
+        this.url = modifyNgrokUrl(url);
         return this;
     }
 
