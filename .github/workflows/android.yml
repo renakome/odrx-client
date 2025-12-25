@@ -82,11 +82,11 @@ jobs:
       if: ${{ secrets.KEYSTORE_PASSWORD != '' }}
       run: |
         cat > keystore.properties <<EOF
-storeFile=release-key.jks
-storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-keyAlias=${{ secrets.KEY_ALIAS }}
-keyPassword=${{ secrets.KEY_PASSWORD }}
-EOF
+        storeFile=release-key.jks
+        storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+        keyAlias=${{ secrets.KEY_ALIAS }}
+        keyPassword=${{ secrets.KEY_PASSWORD }}
+        EOF
         sed -n '1,10p' keystore.properties || true
 
     - name: Assemble release APK
@@ -101,29 +101,20 @@ EOF
           echo "No APK found" >&2
           exit 1
         fi
-        echo "::set-output name=apk_path::$apk"
+        echo "apk_path=$apk" >> $GITHUB_OUTPUT
 
-    - name: Create GitHub Release (draft)
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
       with:
         tag_name: android-build-${{ github.run_number }}
-        release_name: Android build ${{ github.run_number }}
+        name: Android build ${{ github.run_number }}
         body: Automated release for commit ${{ github.sha }}
         draft: true
         prerelease: false
-
-    - name: Upload APK to Release
-      uses: actions/upload-release-asset@v1
+        files: ${{ steps.find_apk.outputs.apk_path }}
+        fail_on_unmatched_files: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ${{ steps.find_apk.outputs.apk_path }}
-        asset_name: ${{ github.repository }}-release-${{ github.run_number }}.apk
-        asset_content_type: application/vnd.android.package-archive
 
   unit-test:
     name: Unit Tests
