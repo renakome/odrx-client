@@ -30,7 +30,7 @@ import ru.nsu.ccfit.zuev.osu.online.PostBuilder.RequestException;
 import ru.nsu.ccfit.zuev.osu.scoring.BeatmapLeaderboardScoringMode;
 
 public class OnlineManager {
-    public static final String hostname = "osuzenith.shardweb.app";
+    public static final String hostname = "ornamentally-bibliophilistic-willard.ngrok-free.dev";
     public static final String endpoint = "https://" + hostname + "/api/";
     public static final String updateEndpoint = endpoint + "update.php?lang=";
     public static final String defaultAvatarURL = "https://" + hostname + "/user/avatar/0.png";
@@ -254,7 +254,7 @@ public class OnlineManager {
     }
 
     public RankedStatus getBeatmapStatus(String md5) throws OnlineManagerException {
-        var builder = new Request.Builder().url("https://osuzenith.shardweb.app/api/v2/md5/" + md5);
+        var builder = new Request.Builder().url("https://" + hostname + "/api/v2/md5/" + md5);
         var request = builder.build();
 
         try (var response = client.newCall(request).execute()) {
