@@ -1,150 +1,194 @@
-name: Android
+name: Build Android (signed debug) and Release
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ master ]
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
-  assemble-debug:
-    name: Assemble Debug APK
-    runs-on: ubuntu-latest
+  build-android:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      API_CLIENT_ID: ${{ secrets.API_CLIENT_ID }}
+      API_CLIENT_SECRET: ${{ secrets.API_CLIENT_SECRET }}
+
     steps:
-    - name: Checkout
+    - name: Checkout repo
       uses: actions/checkout@v4
 
-    - name: Set up JDK 17
+    - name: Setup JDK 11
       uses: actions/setup-java@v4
       with:
-        distribution: "temurin"
-        java-version: 17
+        distribution: microsoft
+        java-version: 11
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-
-    - name: Assemble debug APK
-      run: ./gradlew assembleDebug
-
-  assemble-pre-release:
-    name: Assemble Pre-Release APK
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
       with:
-        distribution: "temurin"
-        java-version: 17
+        dotnet-version: "8.0.x"
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Install .NET Android workload
+      run: dotnet workload install android
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-
-    - name: Assemble pre-release APK
-      run: ./gradlew assemblePre_release
-
-  assemble-release:
-    name: Assemble & Publish Release APK
-    runs-on: ubuntu-latest
-    needs: [assemble-debug, assemble-pre-release]
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: "temurin"
-        java-version: 17
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-
-    # --- decode keystore (from secret) ---
-    - name: Restore keystore from secret
+    - name: Verify API credentials
+      shell: pwsh
       run: |
-        if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release-key.jks
-          ls -l release-key.jks
-        fi
+        $clientId = $env:API_CLIENT_ID
+        $clientSecret = $env:API_CLIENT_SECRET
 
-    - name: Create keystore.properties
-      run: |
-        if [ -n "${{ secrets.KEYSTORE_PASSWORD }}" ]; then
-          cat > keystore.properties <<EOF
-        storeFile=release-key.jks
-        storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-        keyAlias=${{ secrets.KEY_ALIAS }}
-        keyPassword=${{ secrets.KEY_PASSWORD }}
-        EOF
-          sed -n '1,10p' keystore.properties || true
-        fi
+        if ($clientId) {
+          Write-Host "API_CLIENT_ID: $($clientId.Substring(0, [Math]::Min(3, $clientId.Length)))***"
+        } else {
+          Write-Host "API_CLIENT_ID: not set"
+        }
 
-    - name: Assemble release APK
-      run: ./gradlew assembleRelease
+        if ($clientSecret) {
+          Write-Host "API_CLIENT_SECRET: $($clientSecret.Substring(0, [Math]::Min(3, $clientSecret.Length)))***"
+        } else {
+          Write-Host "API_CLIENT_SECRET: not set"
+        }
 
-    - name: Find generated APK
-      id: find_apk
-      run: |
-        apk=$(find . -type f -name '*release*.apk' | head -n 1 || true)
-        echo "Found apk: $apk"
-        if [ -z "$apk" ]; then
-          echo "No APK found" >&2
+        if (-not $clientId -or -not $clientSecret) {
+          Write-Host "❌ API credentials not set!"
           exit 1
-        fi
-        echo "apk_path=$apk" >> $GITHUB_OUTPUT
+        } else {
+          Write-Host "✅ API credentials configured"
+        }
+
+    - name: Restore
+      run: dotnet restore osu.Android\osu.Android.csproj
+
+    - name: Verify build environment
+      shell: pwsh
+      run: |
+        $clientId = $env:API_CLIENT_ID
+        $clientSecret = $env:API_CLIENT_SECRET
+
+        if ($clientId) {
+          Write-Host "Build API_CLIENT_ID: $($clientId.Substring(0, [Math]::Min(3, $clientId.Length)))***"
+        }
+        if ($clientSecret) {
+          Write-Host "Build API_CLIENT_SECRET: $($clientSecret.Substring(0, [Math]::Min(3, $clientSecret.Length)))***"
+        }
+
+    - name: Build Release (Android)
+      run: dotnet build osu.Android\osu.Android.csproj -c Release
+      env:
+        API_CLIENT_ID: ${{ secrets.API_CLIENT_ID }}
+        API_CLIENT_SECRET: ${{ secrets.API_CLIENT_SECRET }}
+
+    - name: Find main APK
+      id: find_apks
+      shell: pwsh
+      run: |
+        Write-Host "Looking for main osu! lazer APK..."
+
+        # Look specifically for the main APK in the expected location
+        $mainApkPath = "osu.Android\bin\Release\net8.0-android\sh.ppy.osulazer.apk"
+
+        if (Test-Path $mainApkPath) {
+          Write-Host "Found main APK: $mainApkPath"
+          $apkPaths = @($mainApkPath)
+        } else {
+          Write-Host "Main APK not found at expected location: $mainApkPath"
+          Write-Host "Searching for any sh.ppy.osulazer.apk files..."
+          $foundApks = Get-ChildItem -Path "*sh.ppy.osulazer.apk" -Recurse -File -ErrorAction SilentlyContinue
+
+          if ($foundApks -and $foundApks.Count -gt 0) {
+            $apkPaths = $foundApks | Where-Object { $_.Name -eq "sh.ppy.osulazer.apk" } | Select-Object -ExpandProperty FullName
+            Write-Host "Found main APK(s):"
+            $apkPaths | ForEach-Object { Write-Host "  $_" }
+          } else {
+            Write-Host "No sh.ppy.osulazer.apk found. Listing all APK files for debug:"
+            Get-ChildItem -Path "*.apk" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Write-Host "  $($_.FullName)" }
+            exit 1
+          }
+        }
+
+        "apk_path=$($apkPaths[0])" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+    - name: Prepare keystore
+      shell: pwsh
+      run: |
+        # Try to use release keystore from secrets first
+        $keystoreB64 = "${{ secrets.KEYSTORE_BASE64 }}"
+        if ($keystoreB64) {
+          Write-Host "Using release keystore from secrets"
+          $keystoreB64 | Out-File -FilePath "release.b64" -Encoding ASCII
+          certutil -decode "release.b64" "release.keystore"
+
+          # Create keystore.properties for uber-apk-signer
+          "storeFile=release.keystore" | Out-File -FilePath "keystore.properties" -Encoding ASCII
+          "storePassword=${{ secrets.KEYSTORE_PASSWORD }}" | Out-File -FilePath "keystore.properties" -Append -Encoding ASCII
+          "keyAlias=${{ secrets.KEY_ALIAS }}" | Out-File -FilePath "keystore.properties" -Append -Encoding ASCII
+          "keyPassword=${{ secrets.KEY_PASSWORD }}" | Out-File -FilePath "keystore.properties" -Append -Encoding ASCII
+          Write-Host "Release keystore configured"
+        } else {
+          Write-Host "No release keystore found, using debug keystore"
+          # Generate debug keystore for signing
+          keytool -genkeypair -v -keystore debug.keystore -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+
+          # Create keystore.properties for debug
+          "storeFile=debug.keystore" | Out-File -FilePath "keystore.properties" -Encoding ASCII
+          "storePassword=android" | Out-File -FilePath "keystore.properties" -Append -Encoding ASCII
+          "keyAlias=androiddebugkey" | Out-File -FilePath "keystore.properties" -Append -Encoding ASCII
+          "keyPassword=android" | Out-File -FilePath "keystore.properties" -Append -Encoding ASCII
+          Write-Host "Debug keystore configured"
+        }
+
+    - name: Download uber-apk-signer
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.2.1/uber-apk-signer-1.2.1.jar" -OutFile "uber-apk-signer.jar"
+
+    - name: Sign APK
+      shell: pwsh
+      run: |
+        $apkPath = "${{ steps.find_apks.outputs.apk_path }}"
+        Write-Host "Signing APK: $apkPath"
+
+        # Read keystore config
+        $keystoreConfig = Get-Content "keystore.properties"
+        $storeFile = ($keystoreConfig | Where-Object { $_ -match "storeFile=" }) -replace "storeFile=", ""
+        $storePass = ($keystoreConfig | Where-Object { $_ -match "storePassword=" }) -replace "storePassword=", ""
+        $keyAlias = ($keystoreConfig | Where-Object { $_ -match "keyAlias=" }) -replace "keyAlias=", ""
+        $keyPass = ($keystoreConfig | Where-Object { $_ -match "keyPassword=" }) -replace "keyPassword=", ""
+
+        Write-Host "Using keystore: $storeFile"
+
+        # Sign the APK
+        & java -jar uber-apk-signer.jar --apks "$apkPath" --ks "$storeFile" --ks-key-alias "$keyAlias" --ks-pass "pass:$storePass" --key-pass "pass:$keyPass" --allowResign
+
+    - name: Find signed APK
+      id: find_signed
+      shell: pwsh
+      run: |
+        $signedPath = "${{ steps.find_apks.outputs.apk_path }}".Replace(".apk", "-Signed.apk")
+        Write-Host "Signed APK location: $signedPath"
+        "signed_path=$signedPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: android-build-${{ github.run_number }}
         name: Android build ${{ github.run_number }}
-        body: Automated release for commit ${{ github.sha }}
+        body: |
+          Automated Android build for osu! lazer with custom server support.
+
+          **Build Details:**
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref }}
+          - Run: ${{ github.run_id }}
+
+          This build includes custom server configuration for osu!droid-rx compatibility.
         draft: true
         prerelease: false
-        files: ${{ steps.find_apk.outputs.apk_path }}
+        files: |
+          ${{ steps.find_signed.outputs.signed_path }}
         fail_on_unmatched_files: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  unit-test:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: "temurin"
-        java-version: 17
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-
-    - name: Run tests
-      run: ./gradlew testDebugUnitTest
-
-    - name: Upload test results
-      if: ${{ always() }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: reports
-        path: |
-          **/build/reports/
-          **/build/test-results/
